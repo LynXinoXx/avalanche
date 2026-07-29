@@ -6,17 +6,17 @@ __generated_with = "0.20.4"
 app = marimo.App(width="medium")
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _():
     import ast
     import csv
-    import json
     import os
     from pathlib import Path
     from typing import Literal
 
     import marimo as mo
     from dotenv import load_dotenv
+    from predict_rlm import PredictRLM
     from pydantic import BaseModel
     from skills import csv_analysis_skill
 
@@ -26,11 +26,11 @@ def _():
         BaseModel,
         Literal,
         Path,
+        PredictRLM,
         ast,
         ava,
         csv,
         csv_analysis_skill,
-        json,
         load_dotenv,
         mo,
         os,
@@ -44,7 +44,6 @@ def _(Path, ast, load_dotenv, os):
     MODEL = os.getenv("PRESENTATION_MODEL", "openai/gpt-5.6-terra")
     SUB_MODEL = os.getenv("PRESENTATION_SUB_MODEL", "gemini/gemini-3.5-flash")
     FEEDBACK_PATH = Path(__file__).with_name("feedback.csv")
-    SIGNALS_PATH = Path("presentation_artifacts") / "crm_product_signals.json"
 
     def source_code(file_name: str, *symbol_names: str) -> str:
         source = Path(__file__).with_name(file_name).read_text(encoding="utf-8")
@@ -70,7 +69,7 @@ def _(Path, ast, load_dotenv, os):
             blocks.append("\n".join(source_lines[first_line - 1 : node.end_lineno]))
         return "\n\n\n".join(blocks)
 
-    return FEEDBACK_PATH, MODEL, SIGNALS_PATH, SUB_MODEL, source_code
+    return FEEDBACK_PATH, MODEL, SUB_MODEL, source_code
 
 
 @app.cell(hide_code=True)
@@ -345,6 +344,52 @@ def quickstart_signature(mo, source_code):
 
 
 @app.cell(hide_code=True)
+async def _(
+    ExtractThemes,
+    FEEDBACK_PATH,
+    Feedback,
+    FeedbackCorpus,
+    MODEL,
+    PredictRLM,
+    SUB_MODEL,
+    csv,
+    csv_analysis_skill,
+    mo,
+):
+    with FEEDBACK_PATH.open(encoding="utf-8", newline="") as _feedback_file:
+        _reader = csv.DictReader(_feedback_file)
+        _corpus = FeedbackCorpus(
+            feedback=[
+                Feedback(
+                    feedback_id=_row["id"],
+                    text=_row["text"],
+                    product_area=_row["product_area"],
+                    customer_segment=_row["customer_segment"],
+                    channel=_row["channel"],
+                    sentiment=_row["sentiment"],
+                )
+                for _row in _reader
+            ]
+        )
+
+    _rlm = PredictRLM(
+        ExtractThemes,
+        lm=MODEL,
+        sub_lm=SUB_MODEL,
+        skills=[csv_analysis_skill],
+    )
+    _result = await _rlm.acall(corpus=_corpus)
+
+    mo.vstack(
+        (
+            mo.md("### Running that agent"),
+            mo.inspect(_result.report.model_dump()),
+        )
+    )
+    return
+
+
+@app.cell(hide_code=True)
 def quickstart_rlm_call(mo):
     mo.vstack(
         (
@@ -384,7 +429,7 @@ def _(mo):
                 "`@ava.step`."
             ),
             mo.ui.code_editor(
-                value='@ava.step\ndef normalize_feedback(text: str) -> str:\n    return text.strip()',
+                value="@ava.step\ndef normalize_feedback(text: str) -> str:\n    return text.strip()",
                 language="python",
                 disabled=True,
                 show_copy_button=True,
@@ -438,7 +483,7 @@ def _(mo):
             mo.md(
                 "The source reads the bundled CSV. A second agent independently detects "
                 "risks. Deterministic Python then combines the two reports, and the "
-                "destination writes the mock CRM import artifact."
+                "destination pushes each signal through a mocked CRM adapter."
             ),
         )
     )
@@ -450,6 +495,17 @@ def _(BaseModel, Literal):
     class Feedback(BaseModel):
         feedback_id: str
         text: str
+        product_area: str
+        customer_segment: Literal["enterprise", "mid_market", "small_business", "startup"]
+        channel: Literal[
+            "community",
+            "customer_call",
+            "email",
+            "in_app",
+            "support_ticket",
+            "survey",
+        ]
+        sentiment: Literal["negative", "neutral", "positive"]
 
     class FeedbackCorpus(BaseModel):
         feedback: list[Feedback]
@@ -457,6 +513,7 @@ def _(BaseModel, Literal):
     class Theme(BaseModel):
         name: str
         evidence: list[str]
+        market_counts: dict[str, int]
 
     class ThemeReport(BaseModel):
         themes: list[Theme]
@@ -477,19 +534,9 @@ def _(BaseModel, Literal):
     class CrmProductSignalBatch(BaseModel):
         signals: list[CrmProductSignal]
 
-    class CrmTask(BaseModel):
-        external_id: str
-        title: str
-
-    class CrmSyncResult(BaseModel):
-        created: list[CrmTask]
-        artifact_path: str
-
     return (
         CrmProductSignal,
         CrmProductSignalBatch,
-        CrmSyncResult,
-        CrmTask,
         Feedback,
         FeedbackCorpus,
         RiskReport,
@@ -501,27 +548,33 @@ def _(BaseModel, Literal):
 def _(
     CrmProductSignal,
     CrmProductSignalBatch,
-    CrmSyncResult,
-    CrmTask,
     FEEDBACK_PATH,
     Feedback,
     FeedbackCorpus,
     MODEL,
     RiskReport,
-    SIGNALS_PATH,
     SUB_MODEL,
     ThemeReport,
     ava,
     csv,
     csv_analysis_skill,
-    json,
 ):
     @ava.source
     def load_feedback_csv() -> FeedbackCorpus:
         with FEEDBACK_PATH.open(encoding="utf-8", newline="") as feedback_file:
             reader = csv.DictReader(feedback_file)
             return FeedbackCorpus(
-                feedback=[Feedback(feedback_id=row["id"], text=row["text"]) for row in reader]
+                feedback=[
+                    Feedback(
+                        feedback_id=row["id"],
+                        text=row["text"],
+                        product_area=row["product_area"],
+                        customer_segment=row["customer_segment"],
+                        channel=row["channel"],
+                        sentiment=row["sentiment"],
+                    )
+                    for row in reader
+                ]
             )
 
     class ExtractThemes(ava.Signature):
@@ -594,33 +647,17 @@ def _(
             ]
         )
 
+    def push_to_crm(item: CrmProductSignal) -> None:
+        pass
+
     @ava.dest
-    def publish_local_crm_import(signals: CrmProductSignalBatch) -> CrmSyncResult:
-        created = [
-            CrmTask(
-                external_id=f"demo-signal-{index}",
-                title=f"{signal.kind}: {signal.headline}",
-            )
-            for index, signal in enumerate(signals.signals, start=1)
-        ]
-        result = CrmSyncResult(
-            created=created,
-            artifact_path=str(SIGNALS_PATH),
-        )
-        SIGNALS_PATH.parent.mkdir(parents=True, exist_ok=True)
-        SIGNALS_PATH.write_text(
-            json.dumps(
-                {
-                    "signals": [signal.model_dump() for signal in signals.signals],
-                    "created": [task.model_dump() for task in created],
-                },
-                indent=2,
-            ),
-            encoding="utf-8",
-        )
-        return result
+    def publish_local_crm_import(signals: CrmProductSignalBatch) -> None:
+        for item in signals.signals:
+            push_to_crm(item)
+        print(signals.model_dump())
 
     return (
+        ExtractThemes,
         compose_crm_product_signals,
         detect_risks,
         extract_themes,
@@ -656,7 +693,7 @@ def _(mo, source_code):
                 disabled=True,
                 show_copy_button=True,
             ),
-            mo.md("### Publish the final tasks"),
+            mo.md("### Push the final signals to the CRM"),
             mo.ui.code_editor(
                 value=source_code("flow.py", "publish_local_crm_import"),
                 language="python",

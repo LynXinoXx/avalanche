@@ -6,6 +6,17 @@ from pydantic import BaseModel
 class Feedback(BaseModel):
     feedback_id: str
     text: str
+    product_area: str
+    customer_segment: Literal["enterprise", "mid_market", "small_business", "startup"]
+    channel: Literal[
+        "community",
+        "customer_call",
+        "email",
+        "in_app",
+        "support_ticket",
+        "survey",
+    ]
+    sentiment: Literal["negative", "neutral", "positive"]
 
 
 class FeedbackCorpus(BaseModel):
@@ -15,6 +26,7 @@ class FeedbackCorpus(BaseModel):
 class Theme(BaseModel):
     name: str
     evidence: list[str]
+    market_counts: dict[str, int]
 
 
 class ThemeReport(BaseModel):
@@ -39,13 +51,3 @@ class CrmProductSignal(BaseModel):
 
 class CrmProductSignalBatch(BaseModel):
     signals: list[CrmProductSignal]
-
-
-class CrmTask(BaseModel):
-    external_id: str
-    title: str
-
-
-class CrmSyncResult(BaseModel):
-    created: list[CrmTask]
-    artifact_path: str

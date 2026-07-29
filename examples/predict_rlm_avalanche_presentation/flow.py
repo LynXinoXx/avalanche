@@ -1,5 +1,4 @@
 import csv
-import json
 import os
 from pathlib import Path
 
@@ -8,8 +7,6 @@ import avalanche as ava
 from .schema import (
     CrmProductSignal,
     CrmProductSignalBatch,
-    CrmSyncResult,
-    CrmTask,
     Feedback,
     FeedbackCorpus,
     RiskReport,
@@ -17,11 +14,11 @@ from .schema import (
 )
 from .signature import DetectRisks, ExtractThemes
 from .skills import csv_analysis_skill
+from .util import push_to_crm
 
 MODEL = os.getenv("PRESENTATION_MODEL", "openai/gpt-5.6-terra")
 SUB_MODEL = os.getenv("PRESENTATION_SUB_MODEL", "gemini/gemini-3.5-flash")
 FEEDBACK_PATH = Path(__file__).with_name("feedback.csv")
-SIGNALS_PATH = Path("presentation_artifacts") / "crm_product_signals.json"
 
 
 @ava.source
@@ -29,7 +26,17 @@ def load_feedback_csv() -> FeedbackCorpus:
     with FEEDBACK_PATH.open(encoding="utf-8", newline="") as feedback_file:
         reader = csv.DictReader(feedback_file)
         return FeedbackCorpus(
-            feedback=[Feedback(feedback_id=row["id"], text=row["text"]) for row in reader]
+            feedback=[
+                Feedback(
+                    feedback_id=row["id"],
+                    text=row["text"],
+                    product_area=row["product_area"],
+                    customer_segment=row["customer_segment"],
+                    channel=row["channel"],
+                    sentiment=row["sentiment"],
+                )
+                for row in reader
+            ]
         )
 
 
@@ -78,30 +85,10 @@ def compose_crm_product_signals(
 
 
 @ava.dest
-def publish_local_crm_import(signals: CrmProductSignalBatch) -> CrmSyncResult:
-    created = [
-        CrmTask(
-            external_id=f"demo-signal-{index}",
-            title=f"{signal.kind}: {signal.headline}",
-        )
-        for index, signal in enumerate(signals.signals, start=1)
-    ]
-    result = CrmSyncResult(
-        created=created,
-        artifact_path=str(SIGNALS_PATH),
-    )
-    SIGNALS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    SIGNALS_PATH.write_text(
-        json.dumps(
-            {
-                "signals": [signal.model_dump() for signal in signals.signals],
-                "created": [task.model_dump() for task in created],
-            },
-            indent=2,
-        ),
-        encoding="utf-8",
-    )
-    return result
+def publish_local_crm_import(signals: CrmProductSignalBatch) -> None:
+    for item in signals.signals:
+        push_to_crm(item)
+    print(signals.model_dump())
 
 
 @ava.workflow
