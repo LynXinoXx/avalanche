@@ -110,3 +110,5 @@ trampoline_ai_transform
 .dspy_cache
 .hermes/
 .avalanche/
+presentation_artifacts/
+__marimo__
