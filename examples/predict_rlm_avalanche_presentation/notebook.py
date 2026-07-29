@@ -9,44 +9,52 @@ app = marimo.App(width="medium")
 @app.cell(hide_code=True)
 def _():
     import ast
-    import csv
+    import importlib.util
     import os
     from pathlib import Path
     from typing import Literal
 
     import marimo as mo
     from dotenv import load_dotenv
-    from predict_rlm import PredictRLM
-    from pydantic import BaseModel
-    from skills import csv_analysis_skill
+    from openpyxl import load_workbook
+    from predict_rlm import File, PredictRLM
+    from pydantic import BaseModel, Field
+    from skills import evidence_coding_skill
 
     import avalanche as ava
 
     return (
         BaseModel,
+        Field,
+        File,
         Literal,
         Path,
         PredictRLM,
         ast,
         ava,
-        csv,
-        csv_analysis_skill,
+        evidence_coding_skill,
+        importlib,
         load_dotenv,
+        load_workbook,
         mo,
         os,
     )
 
 
 @app.cell(hide_code=True)
-def _(Path, ast, load_dotenv, os):
+def _(Path, ast, importlib, load_dotenv, os):
     load_dotenv()
 
     MODEL = os.getenv("PRESENTATION_MODEL", "openai/gpt-5.6-terra")
     SUB_MODEL = os.getenv("PRESENTATION_SUB_MODEL", "gemini/gemini-3.5-flash")
-    FEEDBACK_PATH = Path(__file__).with_name("feedback.csv")
+    FEEDBACK_WORKBOOK_PATH = Path(__file__).with_name("feedback_workbook.xlsx")
+    WORKFLOW_DAG_PATH = Path(__file__).with_name("workflowdag.jpg")
+    WORKFLOW_NODE_TYPES_DAG_PATH = Path(__file__).with_name("workflowdag2.jpg")
+    ARTIFACT_ROOT = Path(__file__).with_name("presentation_artifacts") / "generated_review_pack"
+    WORKBOOK_OUTPUT_DIR = ARTIFACT_ROOT / "workbook"
+    BRIEF_OUTPUT_DIR = ARTIFACT_ROOT / "brief"
 
-    def source_code(file_name: str, *symbol_names: str) -> str:
-        source = Path(__file__).with_name(file_name).read_text(encoding="utf-8")
+    def _source_symbols(source: str, *symbol_names: str) -> str:
         source_lines = source.splitlines()
         tree = ast.parse(source)
         nodes = {}
@@ -69,23 +77,45 @@ def _(Path, ast, load_dotenv, os):
             blocks.append("\n".join(source_lines[first_line - 1 : node.end_lineno]))
         return "\n\n\n".join(blocks)
 
-    return FEEDBACK_PATH, MODEL, SUB_MODEL, source_code
+    def source_code(file_name: str, *symbol_names: str) -> str:
+        source = Path(__file__).with_name(file_name).read_text(encoding="utf-8")
+        return _source_symbols(source, *symbol_names)
+
+    def module_source_code(module_name: str, *symbol_names: str) -> str:
+        spec = importlib.util.find_spec(module_name)
+        if spec is None or spec.origin is None:
+            raise RuntimeError(f"Cannot locate source module {module_name!r}")
+        source = Path(spec.origin).read_text(encoding="utf-8")
+        return _source_symbols(source, *symbol_names)
+
+    return (
+        BRIEF_OUTPUT_DIR,
+        FEEDBACK_WORKBOOK_PATH,
+        MODEL,
+        SUB_MODEL,
+        WORKBOOK_OUTPUT_DIR,
+        WORKFLOW_DAG_PATH,
+        WORKFLOW_NODE_TYPES_DAG_PATH,
+        module_source_code,
+        source_code,
+    )
 
 
 @app.cell(hide_code=True)
 def _(mo):
     mo.vstack(
         (
-            mo.md("# From customer feedback to product work"),
+            mo.md("# From customer feedback to a product review pack"),
             mo.md(
                 "A product team receives customer feedback faster than it can review it. "
                 "Important requests repeat across accounts, retention risks are buried in "
-                "individual comments, and neither becomes actionable product work reliably."
+                "individual comments, and the supporting account and roadmap context lives "
+                "in separate workbook tabs."
             ),
             mo.callout(
-                "Given a bundled CSV of customer feedback, we want recurring product themes "
-                "and material customer risks turned into reviewable CRM tasks—with the "
-                "supporting feedback preserved as evidence.",
+                "Given a bundled customer-feedback workbook, produce recurring themes, "
+                "material account risks, a review workbook, and an executive brief—with "
+                "every conclusion traceable to its source feedback.",
                 kind="info",
             ),
         )
@@ -94,18 +124,26 @@ def _(mo):
 
 
 @app.cell(hide_code=True)
-def _(FEEDBACK_PATH, csv, mo):
-    with FEEDBACK_PATH.open(encoding="utf-8", newline="") as feedback_file:
-        feedback_rows = list(csv.DictReader(feedback_file))
+def _(FEEDBACK_WORKBOOK_PATH, load_workbook, mo):
+    _workbook = load_workbook(FEEDBACK_WORKBOOK_PATH, read_only=True, data_only=False)
+    _feedback_sheet = _workbook["Feedback"]
+    _headers = [cell.value for cell in _feedback_sheet[1]]
+    _feedback_rows = [
+        dict(zip(_headers, row, strict=True))
+        for row in _feedback_sheet.iter_rows(min_row=2, values_only=True)
+    ]
+    _workbook.close()
 
     mo.vstack(
         (
             mo.md("## 1. Start with the real input"),
             mo.md(
-                "The example ships with this feedback. At this point there are no nodes, "
-                "decorators, or agents—only the source material and the outcome we need."
+                "The example ships with this workbook. Its `Feedback` sheet appears below; "
+                "the same file also contains `Accounts` and `Roadmap` sheets. At this point "
+                "there are no nodes, decorators, or agents—only the source material and the "
+                "outcome we need."
             ),
-            mo.ui.table(feedback_rows),
+            mo.ui.table(_feedback_rows),
         )
     )
     return
@@ -122,11 +160,13 @@ def _(mo):
             ),
             mo.md(
                 """
-                1. **Load the feedback** into one validated corpus.
-                2. **Find recurring product themes** and retain their evidence.
-                3. **Identify customer risks** and grade their severity.
-                4. **Combine both analyses** into product signals.
-                5. **Publish the signals** as CRM tasks.
+                1. **Load the feedback workbook** as one file.
+                2. **Find recurring product themes** with traceable evidence.
+                3. **Identify material account risks** using feedback and account context.
+                4. **Combine both reports** into one typed product review.
+                5. **Build the review workbook** from the approved review.
+                6. **Write the executive brief** from the same approved review.
+                7. **Publish both artifacts** as one review pack.
                 """
             ),
         )
@@ -135,23 +175,20 @@ def _(mo):
 
 
 @app.cell(hide_code=True)
-def simple_live_rlm(mo):
+def simple_live_rlm(WORKFLOW_DAG_PATH, mo):
     mo.vstack(
         (
             mo.md("### Dependencies come from the data"),
             mo.md(
-                "Theme extraction and risk detection both consume the same corpus. Neither "
-                "needs the other's result, so they form independent branches that join "
-                "before signals can be composed."
+                "Theme extraction and risk detection both consume the same workbook. The "
+                "approved review then feeds two independent rendering tasks before their "
+                "artifacts are published together."
             ),
-            mo.md(
-                r"""
-                ```text
-                                         ┌─ Find recurring themes ─┐
-                Load customer feedback ──┤                         ├─ Combine signals ── Publish CRM tasks
-                                         └─ Identify risks ────────┘
-                ```
-                """
+            mo.image(
+                WORKFLOW_DAG_PATH,
+                alt="Customer feedback product review workflow DAG",
+                width="100%",
+                rounded=True,
             ),
         )
     )
@@ -164,14 +201,14 @@ def _(mo):
         (
             mo.md("## 3. Zoom in: find recurring product themes"),
             mo.md(
-                "Loading, combining, and publishing all have known procedures. Finding "
-                "themes is different: the workflow must compare comments, decide which "
-                "needs genuinely recur, avoid promoting one-off complaints, and preserve "
-                "the evidence behind every conclusion."
+                "The agent must inspect the workbook, compare comments across accounts, "
+                "decide which needs genuinely recur, calculate counts from source rows, "
+                "and preserve the workbook evidence behind every conclusion."
             ),
             mo.callout(
-                "This is one logical agent task. Searching, grouping, comparing, and "
-                "validating are parts of its internal strategy—not separate workflow nodes.",
+                "This is one logical agent task. Inspection, classification, aggregation, "
+                "and validation are parts of its internal strategy—not separate workflow "
+                "nodes.",
                 kind="warn",
             ),
         )
@@ -188,16 +225,16 @@ def _(mo):
 
     | Boundary | Contract |
     |---|---|
-    | **Input** | The complete typed feedback corpus |
-    | **Responsibility** | Find recurring product needs and cite the supporting feedback |
-    | **Strategy** | Searching, grouping, comparing, and validating |
+    | **Input** | The complete feedback workbook as a `File` |
+    | **Responsibility** | Find recurring product needs and cite their workbook evidence |
+    | **Strategy** | Inspect, classify, aggregate, cross-check, and validate |
     | **Output** | A validated `ThemeReport` |
 
     **Capabilities**: What knowledge & capabilities does it need? What services does it need to reach?
 
-    | Surface | Capbility |
+    | Surface | Capability |
     |---|---|
-    | **Knowledge** | CSV files |
+    | **Knowledge** | Spreadsheet handling |
     | **Services** | None |
     """)
     return
@@ -225,21 +262,19 @@ def _(mo):
 
     ```python
     RLM turn 1/30 (ok)
-      reasoning: We need answer a repo question, not make changes. I should inspect the
-                 RFP/first_pass directory structure and key workflow files (likely
-                 flow.py/run.py/etc.), then summarize the workflow. No edits planned.
-      python: 9 lines
-      output: 534 chars
+      reasoning: I need to inspect the workbook before semantic classification. I should
+                 locate the mounted file, list worksheets, validate headers, and count rows.
+      python: 8 lines
+      output: 214 chars
       code:
         from pathlib import Path
-        import os, subprocess, json, textwrap, re
-        root = Path(workspace)
-        print("workspace", root)
-        target = root/"belts"/"RFP"/"first_pass"
-        print("exists", target.exists(), "is_dir", target.is_dir())
-        if target.exists():
-            for p in sorted(target.iterdir()):
-                print(("DIR " if p.is_dir() else "FILE"), p.name)
+        import pandas as pd
+        workbook_path = next(Path("/sandbox/input/workbook").glob("*.xlsx"))
+        excel = pd.ExcelFile(workbook_path)
+        print("sheets", excel.sheet_names)
+        feedback = pd.read_excel(workbook_path, sheet_name="Feedback", dtype={"feedback_id": str, "account_id": str})
+        print("rows", len(feedback), "columns", feedback.columns.tolist())
+        print(feedback.head(3).to_dict(orient="records"))
     ```
     """)
     return
@@ -249,11 +284,13 @@ def _(mo):
 def _(mo, source_code):
     mo.vstack(
         (
-            mo.md("## 4. The anatomy of an `agent_step`"),
+            mo.md("## 4. The anatomy of an `agent`"),
+            mo.md("A PredictRLM instance is defined by **3 core components**:"),
             mo.md("### A. Signature: contract and strategy"),
             mo.md(
-                "A signature defines the agent's **inputs**, **outputs** and **instructions** "
-                "Here the agent receives a `FeedbackCorpus` and must return a `ThemeReport`."
+                "A signature defines the agent's **inputs**, **outputs** and "
+                "**instructions**. Here the agent receives a workbook `File` and must "
+                "return a `ThemeReport`."
             ),
             mo.ui.code_editor(
                 value=source_code("signature.py", "ExtractThemes"),
@@ -264,8 +301,7 @@ def _(mo, source_code):
             mo.ui.code_editor(
                 value=source_code(
                     "schema.py",
-                    "Feedback",
-                    "FeedbackCorpus",
+                    "EvidenceReference",
                     "Theme",
                     "ThemeReport",
                 ),
@@ -279,17 +315,28 @@ def _(mo, source_code):
 
 
 @app.cell(hide_code=True)
-def _(mo, source_code):
+def _(mo, module_source_code, source_code):
     mo.vstack(
         (
             mo.md("### B. Skills: reusable sandbox knowledge"),
             mo.md(
-                "A skill packages reusable guidance and sandbox capabilities. This CSV "
-                "example pairs validation instructions with pandas, which Avalanche installs "
-                "inside the agent sandbox."
+                "The built-in spreadsheet skill supplies Excel mechanics, formulas, "
+                "formatting, and validation. This custom skill adds a reusable procedure "
+                "for turning qualitative records into evidence-backed findings; both "
+                "analysis agents use it unchanged."
             ),
             mo.ui.code_editor(
-                value=source_code("skills.py", "csv_analysis_skill"),
+                value=source_code("skills.py", "evidence_coding_skill"),
+                language="python",
+                disabled=True,
+                show_copy_button=True,
+            ),
+            mo.md("#### Built-in spreadsheet skill"),
+            mo.ui.code_editor(
+                value=module_source_code(
+                    "predict_rlm.skills.spreadsheet.skill",
+                    "spreadsheet_skill",
+                ),
                 language="python",
                 disabled=True,
                 show_copy_button=True,
@@ -305,10 +352,9 @@ def tools_example(mo):
         (
             mo.md("### C. Tools: typed host capabilities"),
             mo.md(
-                "A tool is a typed host capability exposed to PredictRLM as an ordinary "
-                "Python function. The model can call it freely from its generated code—"
-                "multiple times and composed with other Python—instead of issuing one "
-                "discrete tool call per model turn like a conventional tool-calling agent."
+                "This workflow needs no host tool because account context is bundled in "
+                "the workbook. If that context lived in an authenticated CRM, a typed host "
+                "capability would expose it to PredictRLM as an ordinary Python function."
             ),
             mo.ui.code_editor(
                 value='class AccountPlan(BaseModel):\n    account_id: str\n    tier: str\n\n\ndef lookup_account_plan(account_id: str) -> AccountPlan:\n    """Return the current CRM plan for one account."""\n    return crm_client.fetch_plan(account_id)',
@@ -327,10 +373,10 @@ def quickstart_signature(mo, source_code):
         (
             mo.md("## Putting it together: creating the agent"),
             mo.md(
-                "`@ava.agent_step(...)` combines the signature with its model configuration "
-                "and any skills or tools it needs. Avalanche injects the configured "
-                "`ava.Agent`; the function passes it the typed input and returns the "
-                "signature's validated output."
+                "`@ava.agent_step(...)` combines the signature with its model "
+                "configuration and reusable skills. Avalanche injects the configured "
+                "`ava.Agent`; the function passes it the file and validates the returned "
+                "report."
             ),
             mo.ui.code_editor(
                 value=source_code("flow.py", "extract_themes"),
@@ -346,39 +392,23 @@ def quickstart_signature(mo, source_code):
 @app.cell(hide_code=True)
 async def _(
     ExtractThemes,
-    FEEDBACK_PATH,
-    Feedback,
-    FeedbackCorpus,
+    FEEDBACK_WORKBOOK_PATH,
+    File,
     MODEL,
     PredictRLM,
     SUB_MODEL,
-    csv,
-    csv_analysis_skill,
+    ava,
+    evidence_coding_skill,
     mo,
 ):
-    with FEEDBACK_PATH.open(encoding="utf-8", newline="") as _feedback_file:
-        _reader = csv.DictReader(_feedback_file)
-        _corpus = FeedbackCorpus(
-            feedback=[
-                Feedback(
-                    feedback_id=_row["id"],
-                    text=_row["text"],
-                    product_area=_row["product_area"],
-                    customer_segment=_row["customer_segment"],
-                    channel=_row["channel"],
-                    sentiment=_row["sentiment"],
-                )
-                for _row in _reader
-            ]
-        )
-
+    _workbook = File(path=str(FEEDBACK_WORKBOOK_PATH))
     _rlm = PredictRLM(
         ExtractThemes,
         lm=MODEL,
         sub_lm=SUB_MODEL,
-        skills=[csv_analysis_skill],
+        skills=[ava.agent.skills.spreadsheet, evidence_coding_skill],
     )
-    _result = await _rlm.acall(corpus=_corpus)
+    _result = await _rlm.acall(workbook=_workbook)
 
     mo.vstack(
         (
@@ -390,7 +420,7 @@ async def _(
 
 
 @app.cell(hide_code=True)
-def quickstart_rlm_call(mo):
+def quickstart_rlm_call(WORKFLOW_DAG_PATH, mo):
     mo.vstack(
         (
             mo.md("## 5. Zoom back out to the complete flow"),
@@ -399,14 +429,11 @@ def quickstart_rlm_call(mo):
                 "beside the other responsibilities and choose an execution type for each "
                 "boundary."
             ),
-            mo.md(
-                r"""
-                ```text
-                                               ┌─ extract_themes (agent) ─┐
-                load_feedback_csv (source) ────┤                          ├─ compose signals (step) ── publish tasks (dest)
-                                               └─ detect_risks (agent) ───┘
-                ```
-                """
+            mo.image(
+                WORKFLOW_DAG_PATH,
+                alt="Customer feedback product review workflow DAG",
+                width="100%",
+                rounded=True,
             ),
         )
     )
@@ -440,7 +467,7 @@ def _(mo):
                 "configured `ava.Agent` through dependency injection."
             ),
             mo.ui.code_editor(
-                value="@ava.agent_step(AnalyzeFeedback, lm=MODEL)\nasync def analyze_feedback(\n    corpus: FeedbackCorpus, *, agent: ava.Agent\n) -> FeedbackAnalysis:\n    return (await agent(corpus=corpus)).analysis",
+                value="@ava.agent_step(AnalyzeWorkbook, skills=[ava.agent.skills.spreadsheet])\nasync def analyze_workbook(\n    workbook: File, *, agent: ava.Agent\n) -> WorkbookAnalysis:\n    return (await agent(workbook=workbook)).analysis",
                 language="python",
                 disabled=True,
                 show_copy_button=True,
@@ -462,16 +489,13 @@ def _(mo):
 
 
 @app.cell(hide_code=True)
-def _(mo):
-    mo.md("""
-    | Logical responsibility | Avalanche node | Why |
-    |---|---|---|
-    | Load feedback | `@ava.source` | Constructs the first runtime value |
-    | Extract themes | `@ava.agent_step` | Requires adaptive synthesis |
-    | Detect risks | `@ava.agent_step` | Independent judgment task |
-    | Compose signals | `@ava.step` | Deterministic transformation |
-    | Publish CRM tasks | `@ava.dest` | Owns the final external write |
-    """)
+def _(WORKFLOW_NODE_TYPES_DAG_PATH, mo):
+    mo.image(
+        WORKFLOW_NODE_TYPES_DAG_PATH,
+        alt="Avalanche workflow DAG annotated with node types",
+        width="100%",
+        rounded=True,
+    )
     return
 
 
@@ -481,9 +505,10 @@ def _(mo):
         (
             mo.md("## 6. Implement the remaining steps"),
             mo.md(
-                "The source reads the bundled CSV. A second agent independently detects "
-                "risks. Deterministic Python then combines the two reports, and the "
-                "destination pushes each signal through a mocked CRM adapter."
+                "The source exposes the bundled workbook. A second agent independently "
+                "detects risks, deterministic Python composes the approved review, two "
+                "capability-specific agents render its artifacts, and the destination "
+                "publishes the files together."
             ),
         )
     )
@@ -491,178 +516,190 @@ def _(mo):
 
 
 @app.cell(hide_code=True)
-def _(BaseModel, Literal):
-    class Feedback(BaseModel):
-        feedback_id: str
-        text: str
-        product_area: str
-        customer_segment: Literal["enterprise", "mid_market", "small_business", "startup"]
-        channel: Literal[
-            "community",
-            "customer_call",
-            "email",
-            "in_app",
-            "support_ticket",
-            "survey",
-        ]
-        sentiment: Literal["negative", "neutral", "positive"]
+def _(BaseModel, Field, Literal):
+    CustomerSegment = Literal["enterprise", "mid_market", "small_business", "startup"]
+    RiskSeverity = Literal["low", "medium", "high"]
 
-    class FeedbackCorpus(BaseModel):
-        feedback: list[Feedback]
+    class EvidenceReference(BaseModel):
+        feedback_id: str
+        account_id: str
+        sheet: str
+        row_number: int = Field(ge=2)
+        excerpt: str
 
     class Theme(BaseModel):
         name: str
-        evidence: list[str]
-        market_counts: dict[str, int]
+        summary: str
+        feedback_count: int = Field(ge=2)
+        account_count: int = Field(ge=2)
+        segment_counts: dict[CustomerSegment, int]
+        evidence: list[EvidenceReference] = Field(min_length=2)
 
     class ThemeReport(BaseModel):
+        feedback_rows_analyzed: int = Field(ge=1)
         themes: list[Theme]
+
+    class AccountExposure(BaseModel):
+        account_id: str
+        account_name: str
+        customer_segment: CustomerSegment
+        arr_usd: int = Field(ge=0)
+        renewal_date: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
 
     class Risk(BaseModel):
         issue: str
-        severity: Literal["low", "medium", "high"]
-        evidence: list[str]
+        severity: RiskSeverity
+        rationale: str
+        product_areas: list[str] = Field(min_length=1)
+        affected_accounts: list[AccountExposure] = Field(min_length=1)
+        arr_at_risk_usd: int = Field(ge=0)
+        evidence: list[EvidenceReference] = Field(min_length=1)
 
     class RiskReport(BaseModel):
+        feedback_rows_analyzed: int = Field(ge=1)
         risks: list[Risk]
 
-    class CrmProductSignal(BaseModel):
-        kind: Literal["risk", "theme"]
-        headline: str
-        evidence: list[str]
+    class ProductReview(BaseModel):
+        feedback_rows_analyzed: int = Field(ge=1)
+        themes: list[Theme]
+        risks: list[Risk]
 
-    class CrmProductSignalBatch(BaseModel):
-        signals: list[CrmProductSignal]
+    class PublishedReviewPack(BaseModel):
+        workbook_path: str
+        brief_path: str
 
-    return (
-        CrmProductSignal,
-        CrmProductSignalBatch,
-        Feedback,
-        FeedbackCorpus,
-        RiskReport,
-        ThemeReport,
-    )
+    return ProductReview, PublishedReviewPack, RiskReport, ThemeReport
 
 
 @app.cell(hide_code=True)
 def _(
-    CrmProductSignal,
-    CrmProductSignalBatch,
-    FEEDBACK_PATH,
-    Feedback,
-    FeedbackCorpus,
+    BRIEF_OUTPUT_DIR,
+    FEEDBACK_WORKBOOK_PATH,
+    File,
     MODEL,
+    ProductReview,
+    PublishedReviewPack,
     RiskReport,
     SUB_MODEL,
     ThemeReport,
+    WORKBOOK_OUTPUT_DIR,
     ava,
-    csv,
-    csv_analysis_skill,
+    evidence_coding_skill,
 ):
     @ava.source
-    def load_feedback_csv() -> FeedbackCorpus:
-        with FEEDBACK_PATH.open(encoding="utf-8", newline="") as feedback_file:
-            reader = csv.DictReader(feedback_file)
-            return FeedbackCorpus(
-                feedback=[
-                    Feedback(
-                        feedback_id=row["id"],
-                        text=row["text"],
-                        product_area=row["product_area"],
-                        customer_segment=row["customer_segment"],
-                        channel=row["channel"],
-                        sentiment=row["sentiment"],
-                    )
-                    for row in reader
-                ]
-            )
+    def load_feedback_workbook() -> File:
+        return File(path=str(FEEDBACK_WORKBOOK_PATH))
 
     class ExtractThemes(ava.Signature):
-        """Find recurring product needs and cite the feedback behind each one.
+        """Find recurring cross-account product needs in the feedback workbook.
 
-        Review the complete corpus. Group only recurring needs, preserve the feedback IDs
-        in the evidence, and do not turn a one-off complaint into a theme.
+        Inspect and validate the workbook before analysis. Use focused predict() calls for
+        semantic coding and Python for grouping, deduplication, and counts. Require every
+        theme to span at least two accounts and preserve workbook evidence.
         """
 
-        corpus: FeedbackCorpus = ava.InputField(
-            desc="The complete product-feedback corpus to analyze."
-        )
-        report: ThemeReport = ava.OutputField(
-            desc="Recurring themes with supporting feedback IDs and text."
-        )
+        workbook: File = ava.InputField(desc="Complete feedback workbook.")
+        report: ThemeReport = ava.OutputField(desc="Recurring evidence-backed themes.")
 
     @ava.agent_step(
         ExtractThemes,
         lm=MODEL,
         sub_lm=SUB_MODEL,
-        skills=[csv_analysis_skill],
+        skills=[ava.agent.skills.spreadsheet, evidence_coding_skill],
     )
-    async def extract_themes(corpus: FeedbackCorpus, *, agent: ava.Agent) -> ThemeReport:
-        return (await agent(corpus=corpus)).report
+    async def extract_themes(workbook: File, *, agent: ava.Agent) -> ThemeReport:
+        return ThemeReport.model_validate((await agent(workbook=workbook)).report)
 
     class DetectRisks(ava.Signature):
-        """Find product or customer risks and grade their severity.
+        """Identify material account risks grounded in the feedback workbook."""
 
-        Review the complete corpus. Report only risks grounded in customer feedback, cite the
-        feedback IDs in the evidence, and use high severity only for material retention or
-        business-risk language.
-        """
-
-        corpus: FeedbackCorpus = ava.InputField(
-            desc="The complete product-feedback corpus to analyze."
-        )
-        report: RiskReport = ava.OutputField(
-            desc="Risks, severity, and supporting feedback IDs and text."
-        )
+        workbook: File = ava.InputField(desc="Complete feedback workbook.")
+        report: RiskReport = ava.OutputField(desc="Evidence-backed account risks.")
 
     @ava.agent_step(
         DetectRisks,
         lm=MODEL,
         sub_lm=SUB_MODEL,
+        skills=[ava.agent.skills.spreadsheet, evidence_coding_skill],
     )
-    async def detect_risks(corpus: FeedbackCorpus, *, agent: ava.Agent) -> RiskReport:
-        return (await agent(corpus=corpus)).report
+    async def detect_risks(workbook: File, *, agent: ava.Agent) -> RiskReport:
+        return RiskReport.model_validate((await agent(workbook=workbook)).report)
 
     @ava.step
-    def compose_crm_product_signals(
+    def compose_product_review(
         themes: ThemeReport,
         risks: RiskReport,
-    ) -> CrmProductSignalBatch:
-        return CrmProductSignalBatch(
-            signals=[
-                CrmProductSignal(
-                    kind="risk",
-                    headline=risk.issue,
-                    evidence=risk.evidence,
-                )
-                for risk in risks.risks
-            ]
-            + [
-                CrmProductSignal(
-                    kind="theme",
-                    headline=theme.name,
-                    evidence=theme.evidence,
-                )
-                for theme in themes.themes
-            ]
+    ) -> ProductReview:
+        if themes.feedback_rows_analyzed != risks.feedback_rows_analyzed:
+            raise ValueError("theme and risk reports analyzed different row counts")
+        return ProductReview(
+            feedback_rows_analyzed=themes.feedback_rows_analyzed,
+            themes=themes.themes,
+            risks=risks.risks,
         )
 
-    def push_to_crm(item: CrmProductSignal) -> None:
-        pass
+    class BuildReviewWorkbook(ava.Signature):
+        """Render the approved review as a validated Excel workbook."""
+
+        source_workbook: File = ava.InputField(desc="Original evidence workbook.")
+        review: ProductReview = ava.InputField(desc="Approved review to render.")
+        workbook: File = ava.OutputField(desc="Rendered product_review.xlsx.")
+
+    @ava.agent_step(
+        BuildReviewWorkbook,
+        lm=MODEL,
+        sub_lm=SUB_MODEL,
+        skills=[ava.agent.skills.spreadsheet],
+        output_dir=WORKBOOK_OUTPUT_DIR,
+    )
+    async def build_review_workbook(
+        source_workbook: File,
+        review: ProductReview,
+        *,
+        agent: ava.Agent,
+    ) -> File:
+        return File.model_validate(
+            (await agent(source_workbook=source_workbook, review=review)).workbook
+        )
+
+    class WriteExecutiveBrief(ava.Signature):
+        """Render the approved review as a concise Word executive brief."""
+
+        review: ProductReview = ava.InputField(desc="Approved review to render.")
+        brief: File = ava.OutputField(desc="Rendered executive_brief.docx.")
+
+    @ava.agent_step(
+        WriteExecutiveBrief,
+        lm=MODEL,
+        sub_lm=SUB_MODEL,
+        skills=[ava.agent.skills.docx],
+        output_dir=BRIEF_OUTPUT_DIR,
+    )
+    async def write_executive_brief(
+        review: ProductReview,
+        *,
+        agent: ava.Agent,
+    ) -> File:
+        return File.model_validate((await agent(review=review)).brief)
 
     @ava.dest
-    def publish_local_crm_import(signals: CrmProductSignalBatch) -> None:
-        for item in signals.signals:
-            push_to_crm(item)
-        print(signals.model_dump())
+    def publish_review_pack(workbook: File, brief: File) -> PublishedReviewPack:
+        if workbook.path is None or brief.path is None:
+            raise ValueError("review artifacts must have host file paths")
+        return PublishedReviewPack(
+            workbook_path=workbook.path,
+            brief_path=brief.path,
+        )
 
     return (
         ExtractThemes,
-        compose_crm_product_signals,
+        build_review_workbook,
+        compose_product_review,
         detect_risks,
         extract_themes,
-        load_feedback_csv,
-        publish_local_crm_import,
+        load_feedback_workbook,
+        publish_review_pack,
+        write_executive_brief,
     )
 
 
@@ -670,9 +707,9 @@ def _(
 def _(mo, source_code):
     mo.vstack(
         (
-            mo.md("### Load the corpus"),
+            mo.md("### Load the workbook"),
             mo.ui.code_editor(
-                value=source_code("flow.py", "load_feedback_csv"),
+                value=source_code("flow.py", "load_feedback_workbook"),
                 language="python",
                 disabled=True,
                 show_copy_button=True,
@@ -688,14 +725,32 @@ def _(mo, source_code):
             ),
             mo.md("### Join the analyses deterministically"),
             mo.ui.code_editor(
-                value=source_code("flow.py", "compose_crm_product_signals"),
+                value=source_code("flow.py", "compose_product_review"),
                 language="python",
                 disabled=True,
                 show_copy_button=True,
             ),
-            mo.md("### Push the final signals to the CRM"),
+            mo.md("### Build the review workbook"),
             mo.ui.code_editor(
-                value=source_code("flow.py", "publish_local_crm_import"),
+                value=source_code("signature.py", "BuildReviewWorkbook")
+                + "\n\n\n"
+                + source_code("flow.py", "build_review_workbook"),
+                language="python",
+                disabled=True,
+                show_copy_button=True,
+            ),
+            mo.md("### Write the executive brief"),
+            mo.ui.code_editor(
+                value=source_code("signature.py", "WriteExecutiveBrief")
+                + "\n\n\n"
+                + source_code("flow.py", "write_executive_brief"),
+                language="python",
+                disabled=True,
+                show_copy_button=True,
+            ),
+            mo.md("### Publish the review pack"),
+            mo.ui.code_editor(
+                value=source_code("flow.py", "publish_review_pack"),
                 language="python",
                 disabled=True,
                 show_copy_button=True,
@@ -708,19 +763,22 @@ def _(mo, source_code):
 @app.cell(hide_code=True)
 def _(
     ava,
-    compose_crm_product_signals,
+    build_review_workbook,
+    compose_product_review,
     detect_risks,
     extract_themes,
-    load_feedback_csv,
-    publish_local_crm_import,
+    load_feedback_workbook,
+    publish_review_pack,
+    write_executive_brief,
 ):
     @ava.workflow
-    def feedback_triage():
+    def feedback_review():
         return (
-            load_feedback_csv()
-            >> (extract_themes() & detect_risks())
-            >> compose_crm_product_signals()
-            >> publish_local_crm_import()
+            (workbook := load_feedback_workbook())
+            >> ((themes := extract_themes(workbook)) & (risks := detect_risks(workbook)))
+            >> (review := compose_product_review(themes, risks))
+            >> (build_review_workbook(workbook, review) & write_executive_brief(review))
+            >> publish_review_pack()
         )
 
     return
@@ -734,10 +792,10 @@ def _(mo, source_code):
             mo.md(
                 "The nodes already own their individual responsibilities. The workflow "
                 "body only declares their dependencies: `>>` orders stages, while `&` "
-                "forms the two independent analysis branches."
+                "forms the independent analysis and rendering branches."
             ),
             mo.ui.code_editor(
-                value=source_code("flow.py", "feedback_triage"),
+                value=source_code("flow.py", "feedback_review"),
                 language="python",
                 disabled=True,
                 show_copy_button=True,
